@@ -1,34 +1,114 @@
 "use server";
-import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-export async function login(formData: FormData) {
+import { signUpSchema } from "@/lib/schemas/auth";
+import { loginSchema } from "@/lib/schemas/auth";
+import { success } from "zod/v4-mini";
+import { toast } from "sonner";
+
+
+export async function signIn(formData: FormData) {
   const supabase = await createClient();
-  // type-casting here for convenience
-  // in practice, you should validate your inputs
-  const data = {
-    email: formData.get("email") as string,
-    password: formData.get("password") as string,
-  };
-  const { error } = await supabase.auth.signInWithPassword(data);
-  if (error) {
-    redirect("/error");
+
+  // Validate with Zod
+  const result = loginSchema.safeParse({
+    email: formData.get("email"),
+    password: formData.get("password"),
+  });
+
+  if (!result.success) {
+    return { error: "Invalid form data" };
   }
-  revalidatePath("/", "layout");
-  redirect("/");
+
+  const { error } = await supabase.auth.signInWithPassword({
+    email: result.data.email,
+    password: result.data.password,
+  });
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  redirect("/dashboard");
 }
 export async function signup(formData: FormData) {
   const supabase = await createClient();
-  // type-casting here for convenience
-  // in practice, you should validate your inputs
-  const data = {
-    email: formData.get("email") as string,
-    password: formData.get("password") as string,
-  };
-  const { error } = await supabase.auth.signUp(data);
-  if (error) {
-    redirect("/error");
+
+  // 1. Validate form data with Zod
+  const result = signUpSchema.safeParse({
+    username: formData.get("username"),
+    email: formData.get("email"),
+    password: formData.get("password"),
+  });
+
+  if (!result.success) {
+    return { error: result.error.format() };
   }
-  revalidatePath("/", "layout");
-  redirect("/");
+
+  // 2. Attempt to sign up
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.signUp({
+    email: result.data.email,
+    password: result.data.password,
+    options: {
+      data: {
+        username: result.data.username,
+      },
+      emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL}/dashboard`,
+    },
+  });
+
+  // 3. Handle errors
+  if (error) {
+    console.error("Signup error:", error.message);
+
+    // User-friendly error messages
+    if (error.message.includes("already registered")) {
+      return {
+        error: "This email is already registered. Please login instead.",
+      };
+    }
+    if (error.message.includes("password")) {
+      return {
+        error: "Password requirements not met. Please try a stronger password.",
+      };
+    }
+
+    return { error: "Registration failed. Please try again later." };
+  }
+
+  // 4. Success - redirect to verification page
+  redirect("/verify-email");
+}
+export async function resendConfirmation() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await  supabase.auth.getUser();
+
+  if (!user?.email) {
+    return { error: "No user found" };
+  }
+
+  const { error } = await (
+    await supabase
+  ).auth.resend({
+    type: "signup",
+    email: user.email,
+  });
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  return { success: true };
+};
+
+
+export async function logout() {
+  const supabase = await createClient();
+  await supabase.auth.signOut();
+  return { success: true };
 }
